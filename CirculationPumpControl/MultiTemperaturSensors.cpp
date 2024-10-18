@@ -1,33 +1,40 @@
 /*
-  MultiTemperatureSensor.ino
+  MultiTemperatureSensor.cpp
 */
 
 #include "MultiTemperatureSensors.h"
 
-MultiTemperatureSensors::MultiTemperatureSensors(OneWire* oneWire, uint8_t baseChannel, uint8_t repeatParam, uint8_t rescanParam, uint8_t addressParams)
+MultiTemperatureSensors::MultiTemperatureSensors(
+	uint8_t const numSensors,
+	DallasTemperature & sensors,
+	void (& temperatureChanged)(uint8_t, float),
+	void (& addressChanged)(uint8_t, ssize_t))
+	: num_sensors(numSensors),
+	  sensors(sensors),
+	  temperatureChanged(temperatureChanged),
+	  addressChanged(addressChanged),
+	  addresses(new DeviceAddress[numSensors]),
+	  address_params(new ssize_t[numSensors]),
+	  mappings(new uint8_t[numSensors])
 {
-    sensors = DallasTemperature(oneWire);
-    base_channel = baseChannel;
-    repeat_param = repeatParam;
-    rescan_param = rescanParam;
-    address_param_base = addressParams;
 }
 
-void MultiTemperatureSensors::setup(void)
+MultiTemperatureSensors::~MultiTemperatureSensors()
+{
+	delete addresses;
+	delete address_params;
+	delete mappings;
+}
+
+void MultiTemperatureSensors::start(void)
 {
 	sensors.begin();
 
-	for (uint8_t i = 0; i < MULTI_TEMPERATURE_SENSORS_MAX_SENSORS; i++)
-	{
-		address_params[i] = zunoLoadCFGParam(address_param_base + i);
-	}
-
 	rescanAddresses();
-
-	setRepeatTimeout(zunoLoadCFGParam(repeat_param));
 
 	time_now = millis();
 	is_repeat_timeout = true;
+	is_started = true;
 }
 
 void MultiTemperatureSensors::loop(void)
@@ -47,39 +54,31 @@ void MultiTemperatureSensors::loop(void)
 		time_now = millis();
 		is_repeat_timeout = true;
 
-		for (uint8_t i = 0; i < MULTI_TEMPERATURE_SENSORS_MAX_SENSORS; i++)
+		for (uint8_t i = 0; i < num_sensors; i++)
 		{
 			uint8_t mapping = mappings[i];
-			temperatures[i] = mapping < address_count
-								  ? sensors.getTempC(addresses[mapping]) * 10.0
-								  : bad_temp;
-			zunoSendReport(base_channel + i);
+			(*temperatureChanged)(
+				i,
+				mapping < address_count
+					? sensors.getTempC(addresses[mapping])
+					: bad_temp);
 		}
 	}
 }
 
-void MultiTemperatureSensors::setParameter(uint8_t param, uint32_t value)
+void MultiTemperatureSensors::setAddress(uint8_t const index, uint32_t const value)
 {
-	if (param == repeat_param)
+	if (index < num_sensors)
 	{
-		setRepeatTimeout(value);
-	}
-	else if (param == rescan_param)
-	{
-		rescanAddresses();
-	}
-	else if (param >= address_param_base)
-	{
-		uint8_t index = param - address_param_base;
-		if (index < MULTI_TEMPERATURE_SENSORS_MAX_SENSORS)
+		address_params[index] = value;
+		if (is_started)
 		{
-			address_params[index] = value;
+			mapAddresses();
 		}
-		mapAddresses();
 	}
 }
 
-void MultiTemperatureSensors::setRepeatTimeout(uint32_t value)
+void MultiTemperatureSensors::setRepeatTimeout(uint32_t const value)
 {
 	timeout_repeat = value * 1000 - timeout_convert;
 }
@@ -87,17 +86,17 @@ void MultiTemperatureSensors::setRepeatTimeout(uint32_t value)
 void MultiTemperatureSensors::mapAddresses()
 {
 	address_count = 0;
-	memset(mappings, no_mapping, MULTI_TEMPERATURE_SENSORS_MAX_SENSORS);
+	memset(mappings, no_mapping, num_sensors);
 
 	uint8_t bus_count = sensors.getDeviceCount();
 
 	bool hasAddressMatch;
-	for (uint8_t bus_index = 0; bus_index < bus_count && address_count < MULTI_TEMPERATURE_SENSORS_MAX_SENSORS; bus_index++)
+	for (uint8_t bus_index = 0; bus_index < bus_count && address_count < num_sensors; bus_index++)
 	{
 		if (sensors.getAddress(addresses[address_count], bus_index))
 		{
 			hasAddressMatch = false;
-			for (uint8_t params_index = 0; params_index < MULTI_TEMPERATURE_SENSORS_MAX_SENSORS; params_index++)
+			for (uint8_t params_index = 0; params_index < num_sensors; params_index++)
 			{
 				if (isAddressMatch(address_count, params_index))
 				{
@@ -128,7 +127,7 @@ void MultiTemperatureSensors::rescanAddresses()
 
 	uint8_t bus_count = sensors.getDeviceCount();
 
-	if (address_count == bus_count || address_count == MULTI_TEMPERATURE_SENSORS_MAX_SENSORS)
+	if (address_count == bus_count || address_count == num_sensors)
 	{
 		return;
 	}
@@ -136,15 +135,15 @@ void MultiTemperatureSensors::rescanAddresses()
 	bool hasAddressMatch;
 	uint8_t unmapped_index;
 
-	for (uint8_t bus_index = 0; bus_index < bus_count && address_count < MULTI_TEMPERATURE_SENSORS_MAX_SENSORS; bus_index++)
+	for (uint8_t bus_index = 0; bus_index < bus_count && address_count < num_sensors; bus_index++)
 	{
 		if (sensors.getAddress(addresses[address_count], bus_index))
 		{
 			hasAddressMatch = false;
 			unmapped_index = no_mapping;
-			for (uint8_t params_index = 0; !hasAddressMatch && params_index < MULTI_TEMPERATURE_SENSORS_MAX_SENSORS; params_index++)
+			for (uint8_t params_index = 0; !hasAddressMatch && params_index < num_sensors; params_index++)
 			{
-				if (mappings[params_index] < MULTI_TEMPERATURE_SENSORS_MAX_SENSORS)
+				if (mappings[params_index] < num_sensors)
 				{
 					hasAddressMatch |= isAddressMatch(address_count, params_index);
 				}
@@ -153,12 +152,14 @@ void MultiTemperatureSensors::rescanAddresses()
 					unmapped_index = params_index;
 				}
 			}
-			if (!hasAddressMatch && unmapped_index < MULTI_TEMPERATURE_SENSORS_MAX_SENSORS)
+			if (!hasAddressMatch && unmapped_index < num_sensors)
 			{
 				sensors.setResolution(addresses[address_count], temperatur_precision);
 
 				mappings[unmapped_index] = address_count;
-				zunoSaveCFGParam(address_param_base + address_count, *(((ssize_t *)(addresses + address_count)) + 1));
+				(*addressChanged)(
+					address_count,
+					*(((ssize_t *)(addresses + address_count)) + 1));
 
 				address_count++;
 			}
