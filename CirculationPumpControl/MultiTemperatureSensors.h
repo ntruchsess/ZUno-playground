@@ -20,7 +20,7 @@ private:
   uint8_t *const mappings;
   uint8_t const num_sensors;
 
-  static const int timeout_convert = 1000;
+  static const int timeout_convert = 800;
   int timeout_repeat = 9000;
 
   bool is_repeat_timeout;

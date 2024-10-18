@@ -80,7 +80,7 @@ void MultiTemperatureSensors::setAddress(uint8_t const index, uint32_t const val
 
 void MultiTemperatureSensors::setRepeatTimeout(uint32_t const value)
 {
-  timeout_repeat = value * 1000 - timeout_convert;
+  timeout_repeat = value - timeout_convert;
 }
 
 void MultiTemperatureSensors::mapAddresses()
